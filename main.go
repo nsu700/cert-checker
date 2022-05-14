@@ -13,6 +13,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"regexp"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -45,19 +46,18 @@ func main() {
 		}
 		if content.Type == "kubernetes.io/tls" || content.Type == "SecretTypeTLS" {
 			fmt.Println(content.Type, content.Name, content.Namespace)
-			cert := string(content.Data["tls.crt"])
-			block, _ := pem.Decode([]byte(cert))
-			if block == nil {
-				panic("failed to decode PEM block containing public key")
+			certChain := string(content.Data["tls.crt"])
+			if certChain == "" {
+				panic("no tls.crt in the secret")
 			}
-			certContent, err := x509.ParseCertificate(block.Bytes)
-			if err != nil {
-				panic(err)
+			certs := getCert(certChain)
+			for i := range certs {
+				block, _ := pem.Decode([]byte(certs[i]))
+				if block == nil {
+					panic("failed to decode PEM block containing public key")
+				}
+				parseCertificate(block.Bytes)
 			}
-			fmt.Printf("Name %s\n", certContent.Subject.CommonName)
-			fmt.Printf("Not before %s\n", certContent.NotBefore.String())
-			fmt.Printf("Not after %s\n", certContent.NotAfter.String())
-
 		}
 	}
 }
@@ -67,4 +67,29 @@ func getCurrentTime() string {
 	t := time.Now().UTC()
 	currentTime := fmt.Sprintf("%d-%02d-%02d %02d:%02d:%02d UTC", t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second())
 	return currentTime
+}
+
+func parseCertificate(block []byte) {
+	certContent, err := x509.ParseCertificate(block)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("Subject: %s\n", certContent.Subject.CommonName)
+	fmt.Printf("Issuer: %s\n", certContent.Issuer)
+	fmt.Printf("Not before: %s\n", certContent.NotBefore.String())
+	fmt.Printf("Not after: %s\n", certContent.NotAfter.String())
+}
+
+func getCert(certChain string) []string {
+	var certList []string
+	certBeginMark, _ := regexp.Compile("-----BEGIN CERTIFICATE-----")
+	certEndMark, _ := regexp.Compile("-----END CERTIFICATE-----")
+	certStartList := certBeginMark.FindAllStringIndex(certChain, 10)
+	certEndList := certEndMark.FindAllStringIndex(certChain, 10)
+	for i := range certStartList {
+		certStart := certStartList[i][0]
+		certEnd := certEndList[i][1]
+		certList = append(certList, certChain[certStart:certEnd])
+	}
+	return certList
 }
